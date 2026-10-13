@@ -47,6 +47,31 @@ extension ForEach : View where Content : View {
     public typealias Body = Never
 }
 
+extension ForEach : TabContent where Content : TabContent {
+    public typealias TabValue = Content.TabValue
+    public var body: Self { return self }
+}
+
+extension ForEach where ID == Data.Element.ID, Content : TabContent, Data.Element : Identifiable {
+    @_disfavoredOverload public init<V>(_ data: Data, @TabContentBuilder<V> content: @escaping (Data.Element) -> Content) where V == Content.TabValue {
+        self.data = data
+        self.content = content
+        self.id = { Java_swiftHashable(for: $0.id) }
+        self.onDelete = nil
+        self.onMove = nil
+    }
+}
+
+extension ForEach where Content : TabContent {
+    @_disfavoredOverload public init<V>(_ data: Data, id: KeyPath<Data.Element, ID>, @TabContentBuilder<V> content: @escaping (Data.Element) -> Content) where V == Content.TabValue {
+        self.data = data
+        self.content = content
+        self.id = { Java_swiftHashable(for: $0[keyPath: id]) }
+        self.onDelete = nil
+        self.onMove = nil
+    }
+}
+
 extension ForEach where ID == Data.Element.ID, Content : View, Data.Element : Identifiable {
     public init(_ data: Data, @ViewBuilder content: @escaping (Data.Element) -> Content) {
         self.data = data

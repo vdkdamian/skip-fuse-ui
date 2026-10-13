@@ -12,9 +12,9 @@ public struct TabView<SelectionValue, Content> where SelectionValue : Hashable /
         self.content = content()
     }
 
-    nonisolated public init(selection: Binding<SelectionValue>?, @TabContentBuilder<SelectionValue> content: () -> Content /* C */) where /* Content == TabContentBuilder<SelectionValue>.Content<C>, C */ Content : TabContent {
+    nonisolated public init<C>(selection: Binding<SelectionValue>, @TabContentBuilder<SelectionValue> content: () -> C) where Content == TabContentBuilder<SelectionValue>.Content<C>, C : TabContent {
         self.selection = selection
-        self.content = content()
+        self.content = TabContentBuilder<SelectionValue>.Content(content())
     }
 }
 
@@ -44,8 +44,9 @@ extension TabView where SelectionValue == Int {
 }
 
 extension TabView {
-    nonisolated public init(@TabContentBuilder<Never> content: () -> Content /* C */) where SelectionValue == Never, /* Content == TabContentBuilder<Never>.Content<C>, C */ Content : TabContent {
-        self.init(selection: nil, content: content)
+    nonisolated public init<C>(@TabContentBuilder<Never> content: () -> C) where SelectionValue == Never, Content == TabContentBuilder<Never>.Content<C>, C : TabContent {
+        self.selection = nil
+        self.content = TabContentBuilder<Never>.Content(content())
     }
 }
 
@@ -192,6 +193,7 @@ public struct Tab<Value, Content, Label> {
 
 extension Tab : TabContent where Value : Hashable, Content : View, Label : View {
     public typealias TabValue = Value
+    public var body: Self { return self }
 
     @_disfavoredOverload nonisolated public init<S>(_ title: S, image: String, value: Value, @ViewBuilder content: () -> Content) where Label == DefaultTabLabel, S : StringProtocol {
         self.init(title, image: image, value: value, role: nil, content: content)
@@ -509,8 +511,7 @@ public struct TabSection<Header, Content, Footer, SelectionValue> {
 
 extension TabSection : TabContent where Header : View, Content : TabContent, Footer : View, SelectionValue == Content.TabValue {
     public typealias TabValue = Content.TabValue
-
-//    public typealias Body = TabSection<Header, Content, Footer, SelectionValue>
+    public var body: Self { return self }
 }
 
 extension TabSection where Content : TabContent, SelectionValue : Hashable {
@@ -592,54 +593,63 @@ public struct TabRole : Hashable, Sendable {
     let identifier: Int // For bridging
 }
 
-@MainActor @preconcurrency public protocol TabContent<TabValue> {
-    associatedtype TabValue : Hashable //where Self.TabValue == Self.Body.TabValue
+@MainActor @preconcurrency public protocol TabContent<TabValue> : SkipUIBridging {
+    associatedtype TabValue : Hashable
+    associatedtype Body : TabContent where Self.TabValue == Self.Body.TabValue
 
-//    associatedtype Body : TabContent
-//
-//    @TabContentBuilder<Self.TabValue> @MainActor @preconcurrency var body: Self.Body { get }
+    @TabContentBuilder<Self.TabValue> @MainActor @preconcurrency var body: Self.Body { get }
+}
 
-    nonisolated var modifiers: [(any SkipUI.View) -> any SkipUI.View] { get set }
+extension TabContent {
+    nonisolated(unsafe) public var Java_view: any SkipUI.View {
+        return body.Java_view
+    }
 }
 
 public struct EmptyTabContent {
-    public var modifiers: [(any SkipUI.View) -> any SkipUI.View] {
-        get {
-            return []
-        }
-        set {
-        }
-    }
 }
 
 extension EmptyTabContent : TabContent {
     public typealias TabValue = Never
+    public var body: Self { return self }
+}
+
+extension Optional : TabContent where Wrapped : TabContent {
+    public typealias TabValue = Wrapped.TabValue
+    public var body: Self { return self }
+
+    public var Java_view: any SkipUI.View {
+        switch self {
+        case .none:
+            return SkipUI.EmptyView()
+        case .some(let content):
+            return content.Java_view
+        }
+    }
 }
 
 public struct AnyTabContent<T> {
     var content: any TabContent<T>
+    var modifiers: [(any SkipUI.View) -> any SkipUI.View] = []
 
     public init(_ content: any TabContent<T>) {
         self.content = content
     }
 
-    public var modifiers: [(any SkipUI.View) -> any SkipUI.View] {
-        get {
-            return content.modifiers
-        }
-        set {
-            content.modifiers = newValue
-        }
-    }
 }
 
 extension AnyTabContent : TabContent where T : Hashable {
     public typealias TabValue = T
+    public var body: Self { return self }
 }
 
 extension AnyTabContent : SkipUIBridging {
     public var Java_view: any SkipUI.View {
-        return (content as? SkipUIBridging)?.Java_view ?? SkipUI.EmptyView()
+        var javaView = content.Java_view
+        for modifier in modifiers {
+            javaView = modifier(javaView)
+        }
+        return javaView
     }
 }
 
@@ -659,9 +669,10 @@ extension TabContent {
         return self
     }
 
-    @available(*, unavailable)
     @_disfavoredOverload nonisolated public func accessibilityValue<S>(_ value: S, isEnabled: Bool = true) -> some TabContent<Self.TabValue> where S : StringProtocol {
-        return self
+        var tabContent = AnyTabContent(self)
+        tabContent.modifiers.append({ $0.accessibilityValue(SkipUI.Text(verbatim: String(value)), isEnabled: isEnabled) })
+        return tabContent
     }
 }
 
@@ -710,7 +721,6 @@ extension TabContent {
 }
 
 extension TabContent {
-    @available(*, unavailable)
     nonisolated public func customizationBehavior(_ behavior: TabCustomizationBehavior, for placements: AdaptableTabBarPlacement...) -> some TabContent<Self.TabValue> {
         return self
     }
@@ -721,7 +731,6 @@ extension TabContent {
 }
 
 extension TabContent {
-    @available(*, unavailable)
     nonisolated public func sectionActions<Content>(@ViewBuilder content: () -> Content) -> some TabContent<Self.TabValue> where Content : View {
         return self
     }
@@ -747,9 +756,10 @@ extension TabContent {
 }
 
 extension TabContent {
-    @available(*, unavailable)
     nonisolated public func badge(_ count: Int) -> some TabContent<Self.TabValue> {
-        return self
+        var tabContent = AnyTabContent(self)
+        tabContent.modifiers.append({ ($0 as? any SkipUI.TabContent)?.badge(count) ?? $0 })
+        return tabContent
     }
 
     @available(*, unavailable)
@@ -823,14 +833,13 @@ extension TabContent {
 
 extension TabContent {
     nonisolated public func accessibilityIdentifier(_ identifier: String, isEnabled: Bool = true) -> some TabContent<Self.TabValue> {
-        var tabContent = self
+        var tabContent = AnyTabContent(self)
         tabContent.modifiers.append({ $0.accessibilityIdentifier(identifier, isEnabled: isEnabled) })
         return tabContent
     }
 }
 
 extension TabContent {
-    @available(*, unavailable)
     nonisolated public func defaultVisibility(_ visibility: Visibility, for placements: AdaptableTabBarPlacement...) -> some TabContent<Self.TabValue> {
         return self
     }
@@ -838,7 +847,7 @@ extension TabContent {
 
 extension TabContent {
     nonisolated public func hidden(_ hidden: Bool = true) -> some TabContent<Self.TabValue> {
-        var tabContent = self
+        var tabContent = AnyTabContent(self)
         tabContent.modifiers.append({ ($0 as? any SkipUI.TabContent)?.hidden(hidden) ?? $0 })
         return tabContent
     }
@@ -846,14 +855,13 @@ extension TabContent {
 
 extension TabContent {
     nonisolated public func disabled(_ disabled: Bool) -> some TabContent<Self.TabValue> {
-        var tabContent = self
+        var tabContent = AnyTabContent(self)
         tabContent.modifiers.append({ ($0 as? any SkipUI.TabContent)?.disabled(disabled) ?? $0 })
         return tabContent
     }
 }
 
 extension TabContent {
-    @available(*, unavailable)
     nonisolated public func tabPlacement(_ placement: TabPlacement) -> some TabContent<Self.TabValue> {
         return self
     }
@@ -871,11 +879,12 @@ public struct TupleTabContent<T> {
 
 extension TupleTabContent : TabContent where T : Hashable {
     public typealias TabValue = T
+    public var body: Self { return self }
 }
 
 extension TupleTabContent : SkipUIBridging {
     public var Java_view: any SkipUI.View {
-        let javaContents = contents.compactMap { ($0 as? SkipUIBridging)?.Java_view }
+        let javaContents = contents.map(\.Java_view)
         var javaView: any SkipUI.View = SkipUI.ComposeBuilder(bridgedViews: javaContents)
         for modifier in modifiers {
             javaView = modifier(javaView)
@@ -885,10 +894,15 @@ extension TupleTabContent : SkipUIBridging {
 }
 
 @resultBuilder public struct TabContentBuilder<TabValue> where TabValue : Hashable {
-//    public struct Content<C> : View where C : TabContent {
-//        @MainActor @preconcurrency public var body: some View { get }
-//        public typealias Body = some View
-//    }
+    public struct Content<C> : View where C : TabContent {
+        let content: C
+
+        init(_ content: C) {
+            self.content = content
+        }
+
+        public typealias Body = Never
+    }
 
     public static func buildExpression(_ content: some TabContent<TabValue>) -> some TabContent<TabValue> {
         return content
@@ -912,6 +926,12 @@ extension TupleTabContent : SkipUIBridging {
 
     public static func buildLimitedAvailability<T>(_ content: T) -> AnyTabContent<T.TabValue> where T : TabContent {
         return AnyTabContent(content)
+    }
+}
+
+extension TabContentBuilder.Content : SkipUIBridging {
+    public var Java_view: any SkipUI.View {
+        return content.Java_view
     }
 }
 
